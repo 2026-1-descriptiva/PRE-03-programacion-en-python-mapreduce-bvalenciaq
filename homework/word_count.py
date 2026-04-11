@@ -1,60 +1,40 @@
 """Taller evaluable"""
 
-# pylint: disable=broad-exception-raised
-
-import fileinput
 import glob
-import os.path
+import os
+import shutil
 import string
 import time
 
-# El experimento consiste en aplicar el algoritmo de word count de hadoop
-# a un conjunto de archivos en texto plano, midiendo el tiempo de ejecución.
-# El conjunto de archivos se genera replicando n veces un conjunto de archivos
-# de ejemplo que se encuentran en la carpeta files/raw.
 
-
-def clear_folder(folder):
-    if os.path.exists(folder):
-        for file in glob.glob(f"{folder}*"):
+def prepate_input_dicrectory(path: str):
+    """Crea la carpeta si no existe."""
+    if not os.path.exists(path):
+        os.makedirs(path, exist_ok=True)
+    else:
+        # Elimina todos los archivos en la carpeta
+        for file in glob.glob(f"{path}/*"):
             os.remove(file)
 
 
-def initialize_folder(folder):
-    if os.path.exists(folder):
-        clear_folder(folder)
-    else:
-        os.makedirs(folder)
-
-
-def delete_folder(folder):
-    if os.path.exists(folder):
-        clear_folder(folder)
-        os.rmdir(folder)
-
-
-def generate_file_copies(n):
-
-    # 🔥 Crear carpeta input si no existe
-    if not os.path.exists("files/input/"):
-        os.makedirs("files/input/")
-
-    for file in glob.glob("files/raw/*"):
+# Copia los archivos raw a {input_path} usando python multi plataforma
+def copy_raw_files_to_input_folder(n, raw_path, input_path):
+    for file in glob.glob(f"{raw_path}/*"):
+        print(f"Copying {file} to {input_path} " f" {n} times")
         with open(file, "r", encoding="utf-8") as f:
-            text = f.read()
+            content = f.read()
+        # Crea NUMERO_COPIAS copias del archivo
+        for i in range(n):
+            raw_file_name = os.path.basename(file)
+            raw_file_name_without_ext, raw_file_ext = os.path.splitext(raw_file_name)
+            with open(
+                f"{input_path}/{raw_file_name_without_ext}_{i}.{raw_file_ext.lstrip('.')}",
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write(content)
 
-        for i in range(1, n + 1):
-            raw_filename_with_extension = os.path.basename(file)
-            raw_filename_without_extension = os.path.splitext(
-                raw_filename_with_extension
-            )[0]
-            new_filename = f"{raw_filename_without_extension}_{i}.txt"
 
-            with open(f"files/input/{new_filename}", "w", encoding="utf-8") as f2:
-                f2.write(text)
-
-
-# Mapea las líneas a pares (palabra, 1). Este es el mapper.
 def mapper(sequence):
     pairs_sequence = []
     for _, line in sequence:
@@ -66,7 +46,6 @@ def mapper(sequence):
     return pairs_sequence
 
 
-# Reduce la secuencia de pares sumando los valores por cada palabra. Este es el reducer.
 def reducer(pairs_sequence):
     result = []
     for key, value in pairs_sequence:
@@ -77,56 +56,85 @@ def reducer(pairs_sequence):
     return result
 
 
-def hadoop(input_folder, output_folder, mapper_fn, reducer_fn):
+def hadoop(mapper_func, reducer_func, input_path, output_path):
+    """Simula el comportamiento de Hadoop Streaming."""
 
-    def read_records_from_input(input_folder):
+    def emit_input_lines(input_path):
         sequence = []
-        files = glob.glob(f"{input_folder}*")
+        files = glob.glob(f"{input_path}/*")
         for file in files:
             with open(file, "r", encoding="utf-8") as f:
                 for line in f:
                     sequence.append((file, line))
         return sequence
 
-    def save_results_to_output(result):
-        with open("files/output/part-00000", "w", encoding="utf-8") as f:
+    def create_output_folder(output_dir):
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        else:
+            raise FileExistsError(f"The folder {output_dir} already exists")
+
+    def shuffle_and_sort(pairs_sequence):
+        pairs_sequence = sorted(pairs_sequence)
+        return pairs_sequence
+
+    def export_results_to_file(output_path, result):
+        with open(f"{output_path}/part-00000", "w", encoding="utf-8") as f:
             for key, value in result:
                 f.write(f"{key}\t{value}\n")
 
-    def create_success_file(output_folder):
-        with open(os.path.join(output_folder, "_SUCCESS"), "w", encoding="utf-8") as f:
-            f.write("")
+    def create_success_file(output_path):
+        """Create Marker"""
+        with open(f"{output_path}/_SUCCESS", "w", encoding="utf-8") as f:
+            f.write("")  # archivo vacío
 
-    def create_output_directory(output_folder):
-        if os.path.exists(output_folder):
-            raise FileExistsError(f"The folder '{output_folder}' already exists.")
-        else:
-            os.makedirs(output_folder)
+    # Lee los archivos de {input_path}
+    sequence = emit_input_lines(input_path)
 
-    sequence = read_records_from_input(input_folder)
-    pairs_sequence = mapper_fn(sequence)
-    pairs_sequence = sorted(pairs_sequence)
-    result = reducer_fn(pairs_sequence)
-    create_output_directory(output_folder)
-    save_results_to_output(result)
-    create_success_file(output_folder)
+    # Mapea las líneas a pares (palabra, 1). Este es el mapper.
+    pairs_sequence = mapper_func(sequence)
+
+    # ordena la secuencia de pares por palabra
+    pairs_sequence = shuffle_and_sort(pairs_sequence)
+
+    # Reduce la secuencia de pares sumando los valores para cada palabra. este es el reducer.
+    result = reducer_func(pairs_sequence)
+
+    # Crea la carpeta {output_path}
+    create_output_folder(output_path)
+
+    # Guarda el resultado en un archivo {output_path}/part-00000
+    export_results_to_file(output_path, result)
+
+    # crea un archivo _SUCCESS en {output_path}
+    create_success_file(output_path)
+
+
+def run_job(n: int = 1000):
+    """Ejecuta el job de word count."""
+    raw_path = "files/raw"
+    input_path = "files/input"
+    output_path = "files/output"
+
+    prepate_input_dicrectory(input_path)
+    copy_raw_files_to_input_folder(n, raw_path, input_path)
+
+    # El experimento realmente empieza en este punto.
+    start_time = time.time()
+
+    # Elimina la carpeta output/ si existe
+    if os.path.exists("files/output/"):
+        for file in os.listdir("files/output/"):
+            file_path = os.path.join("files/output/", file)
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+        os.rmdir("files/output/")
+
+    hadoop(mapper, reducer, input_path, output_path)
+
+    # Imprime el tiempo que tomó el experimento
+    print(f"Tiempo de ejecución: {time.time() - start_time} segundos")
 
 
 if __name__ == "__main__":
-
-    initialize_folder("files/input/")
-    delete_folder("files/output/")
-    generate_file_copies(1000)
-    start_time = time.time()
-
-    hadoop(
-        input_folder="files/input/",
-        output_folder="files/output/",
-        mapper_fn=mapper,
-        reducer_fn=reducer,
-    )
-
-    end_time = time.time()
-    print(f"Tiempo de ejecución: {end_time - start_time:.2f} segundos")
-
-#dfsafsdfa
+    run_job(n=10000)
